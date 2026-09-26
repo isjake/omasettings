@@ -5,6 +5,37 @@ Each page writes a plain config file under `~/.config`, so the file stays the
 source of truth: change it in the app or by hand, and the other side follows
 live.
 
+![omasettings, mouse pointer page](docs/screenshot.png)
+
+## What it is
+
+A native Qt app in the same style as omatimer. Its first page is the mouse
+pointer.
+
+**What it does:**
+- Each installed pointer style shows as a card with four of its shapes
+  (arrow, hand, text, loading), drawn at your chosen size.
+- Click a card to switch to it. Hover over a card to try its arrow before you
+  pick it.
+- The size buttons are 24, 32, 40, 48 and 64.
+- Colors follow your Omarchy theme and update when you change themes.
+- You can also set it from the terminal:
+  `omasettings pointer Bibata-Modern-Ice 40`.
+- You can open it from the app launcher like any other app.
+
+**The file is still in charge:** the pointer setting lives in its own file,
+`~/.config/hypr/cursor.lua`, which `hyprland.lua` loads. The app saves to that
+file, and if you edit the file by hand, the app picks up the change right
+away.
+
+**Styles:** 16 extra styles (Bibata, Catppuccin, GoogleDot, macOS and Phinger)
+are installed into `~/.local/share/icons`, so no password was needed. Any style
+added to that folder later shows up the next time the app opens. See
+[Installing more pointer styles](#installing-more-pointer-styles).
+
+**Next pages** that would fit: keyboard, display, sound and fonts. See
+[Adding a page](#adding-a-page).
+
 ## Build
 
 Needs `qt6-base`.
@@ -59,3 +90,21 @@ re-tinted live on theme change, the same as omatimer and omacalc.
 Write a `QWidget` for it and call `addPage("Name", widget)` in the
 `Omasettings` constructor. Keep its settings in their own file under
 `~/.config` so hand edits and the app never fight over a shared file.
+
+## Installing more pointer styles
+
+No `sudo` needed: unpack a theme into `~/.local/share/icons`. The 16 installed
+so far came from these GitHub releases:
+
+| Style | Source |
+|---|---|
+| Bibata Modern Amber / Classic / Ice | [ful1e5/Bibata_Cursor](https://github.com/ful1e5/Bibata_Cursor/releases) |
+| Catppuccin Mocha Dark / Light / Mauve, Latte Light | [catppuccin/cursors](https://github.com/catppuccin/cursors/releases) |
+| GoogleDot Black / White / Blue | [ful1e5/Google_Cursor](https://github.com/ful1e5/Google_Cursor/releases) |
+| macOS, macOS White | [ful1e5/apple_cursor](https://github.com/ful1e5/apple_cursor/releases) |
+| Phinger dark / light (plus left-handed) | [phisch/phinger-cursors](https://github.com/phisch/phinger-cursors/releases) |
+
+```sh
+curl -sLO https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Ice.tar.xz
+tar -xf Bibata-Modern-Ice.tar.xz -C ~/.local/share/icons
+```
