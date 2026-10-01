@@ -33,8 +33,8 @@ are installed into `~/.local/share/icons`, so no password was needed. Any style
 added to that folder later shows up the next time the app opens. See
 [Installing more pointer styles](#installing-more-pointer-styles).
 
-**Next pages** that would fit: keyboard, display, sound and fonts. See
-[Adding a page](#adding-a-page).
+**Other pages:** Windows, Keyboard & touchpad, and Display (see
+[Pages](#pages)). Sound would fit next. See [Adding a page](#adding-a-page).
 
 ## Build
 
@@ -55,7 +55,11 @@ make -j$(nproc)
 omasettings                          # open the window
 omasettings pointer                  # print the current pointer and size
 omasettings pointer Yaru 32          # set it without opening the window
+omasettings --page windows           # open on a page (any word of its name)
 ```
+
+Hyprland's rules in `~/.config/hypr/hyprland.lua` open it floating and
+centered at 1040×680, since a narrow tile is too tight for its pages.
 
 Esc or Ctrl+Q closes the window.
 
@@ -80,6 +84,34 @@ one to try its arrow on first. Sizes are 24 (Omarchy's default) to 64.
 Cursor files are Xcursor format, which Qt can't read, so a small reader in
 `main.cpp` pulls out the first frame at the nearest size.
 
+### Windows, Keyboard & touchpad, Display
+
+Sliders and On/Off switches for the settings in Omarchy's own files. Each change
+is saved a beat after you stop dragging, then `hyprctl reload` applies it; if
+Hyprland rejects the file, the error shows under the page.
+
+| Page | File | Settings |
+|---|---|---|
+| Windows | `hypr/looknfeel.lua` | gap between windows, each screen edge, border, corner rounding, dimming, animations |
+| Keyboard & touchpad | `hypr/input.lua` | key repeat speed and delay, pointer speed, natural scrolling, scroll speed, ignore while typing, two-finger right-click |
+| Display | `hypr/monitors.lua` | screen scale (`omarchy_monitor_scale`) |
+
+These files are hand-written with comments, so the app never rewrites them
+whole. A small Lua reader in `main.cpp` (`scanLua` / `setLuaValue`) finds
+`key = value` inside the nested tables and swaps just that value. A setting
+the file doesn't have yet is added to the table it belongs in. Its current
+value then comes from `hyprctl getoption`, which is Omarchy's default.
+
+Some settings aren't in those files and are changed directly:
+
+- **A lone window's shape** (Windows): Omarchy's Super+Ctrl+Backspace toggle,
+  `~/.local/state/omarchy/toggles/hypr/single-window-aspect-ratio.lua`. Fill
+  removes the file; Square, 4:3, 3:2 and 16:9 write it. The shortcut still works.
+- **Keyboard light** and **Screen brightness**: `brightnessctl`, the same as
+  the `kbhigh`/`kblow` aliases. They follow the brightness keys too.
+- **Text size (GTK apps)**: gsettings `text-scaling-factor`.
+- **System font**: runs `omarchy font set`.
+
 ## Colors
 
 From the current Omarchy theme (`~/.local/state/omarchy/current/theme/colors.toml`),
@@ -88,8 +120,9 @@ re-tinted live on theme change, the same as omatimer and omacalc.
 ## Adding a page
 
 Write a `QWidget` for it and call `addPage("Name", widget)` in the
-`Omasettings` constructor. Keep its settings in their own file under
-`~/.config` so hand edits and the app never fight over a shared file.
+`Omasettings` constructor. For Hyprland settings, a `HyprPage` with a list of
+`HyprField`s (Lua path, kind, range) is all it takes; `addRow` and
+`addLiveSlider` add rows for things outside the file.
 
 ## Installing more pointer styles
 
