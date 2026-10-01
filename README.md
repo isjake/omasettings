@@ -101,6 +101,17 @@ Hyprland rejects the file, the error shows under the page.
 | Keyboard & touchpad | `hypr/input.lua` | key repeat speed and delay, pointer speed, natural scrolling, scroll speed, ignore while typing, two-finger right-click |
 | Display | `hypr/monitors.lua` | screen scale (`omarchy_monitor_scale`; Auto is Omarchy's default) |
 
+**Trying the defaults:** a ↺ shows beside every setting the file changes;
+it takes that line out (or, for monitors.lua's scale, puts back the stock
+`"auto"`), so Omarchy's default applies. **Try Omarchy defaults** swaps in a
+fresh install's copy of the whole file (from `$OMARCHY_PATH/config/hypr/`),
+keeping yours in `~/.local/state/omasettings/<file>.mine`; **Undo, back to
+mine** puts it back. In the pointer downloads, **Remove** deletes a style's
+folder from `~/.local/share/icons`, switching to Adwaita if it was in use.
+
+The app's font is the system monospace font and follows `omarchy font set`
+live, the same as omatimer.
+
 Sliders jump to where you click, and scrolling the page over one scrolls the
 page instead of changing it.
 
