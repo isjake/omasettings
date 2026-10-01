@@ -18,6 +18,11 @@
 #include <QHBoxLayout>
 #include <QGridLayout>
 #include <QLabel>
+#include <QMouseEvent>
+#include <QWheelEvent>
+#include <QStyleOptionSlider>
+#include <QElapsedTimer>
+#include <QMessageBox>
 #include <QComboBox>
 #include <functional>
 #include <QSlider>
@@ -344,6 +349,80 @@ static bool writeCursorSetting(const CursorSetting &s)
     return f.commit();
 }
 
+// cursor.lua only counts if hyprland.lua loads it. A fresh Omarchy's
+// doesn't, so the first save adds the line, or the pick would be gone at the
+// next login.
+static void ensureCursorRequired()
+{
+    const QString path = QDir::homePath() + "/.config/hypr/hyprland.lua";
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return;
+    const QString text = QString::fromUtf8(f.readAll());
+    f.close();
+    static const QRegularExpression loaded("^\\s*require\\s*\\(?\\s*[\"']hypr\\.cursor[\"']",
+                                           QRegularExpression::MultilineOption);
+    if (loaded.match(text).hasMatch())
+        return;
+    if (f.open(QIODevice::Append | QIODevice::Text))
+        f.write(QString("%1\n-- Mouse pointer theme and size. Set from the omasettings app, or edit\n"
+                        "-- hypr/cursor.lua directly.\nrequire(\"hypr.cursor\")\n")
+                    .arg(text.endsWith('\n') ? "" : "\n")
+                    .toUtf8());
+}
+
+// Pointer styles that can be fetched into ~/.local/share/icons, no password
+// needed. A download can hold several (Phinger's has four).
+struct CursorDownload {
+    QString name;
+    QStringList ids; // folders it unpacks, to tell when it's installed
+    QString url;
+};
+
+static const QList<CursorDownload> &cursorDownloads()
+{
+    static const QString bibata = "https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/";
+    static const QString catppuccin = "https://github.com/catppuccin/cursors/releases/download/v2.0.0/";
+    static const QString google = "https://github.com/ful1e5/Google_Cursor/releases/download/v2.0.0/";
+    static const QString apple = "https://github.com/ful1e5/apple_cursor/releases/download/v2.0.1/";
+    static const QList<CursorDownload> list = {
+        {"Bibata Modern Ice", {"Bibata-Modern-Ice"}, bibata + "Bibata-Modern-Ice.tar.xz"},
+        {"Bibata Modern Classic", {"Bibata-Modern-Classic"}, bibata + "Bibata-Modern-Classic.tar.xz"},
+        {"Bibata Modern Amber", {"Bibata-Modern-Amber"}, bibata + "Bibata-Modern-Amber.tar.xz"},
+        {"Catppuccin Mocha Dark", {"catppuccin-mocha-dark-cursors"}, catppuccin + "catppuccin-mocha-dark-cursors.zip"},
+        {"Catppuccin Mocha Light", {"catppuccin-mocha-light-cursors"}, catppuccin + "catppuccin-mocha-light-cursors.zip"},
+        {"Catppuccin Mocha Mauve", {"catppuccin-mocha-mauve-cursors"}, catppuccin + "catppuccin-mocha-mauve-cursors.zip"},
+        {"Catppuccin Latte Light", {"catppuccin-latte-light-cursors"}, catppuccin + "catppuccin-latte-light-cursors.zip"},
+        {"GoogleDot Black", {"GoogleDot-Black"}, google + "GoogleDot-Black.tar.gz"},
+        {"GoogleDot White", {"GoogleDot-White"}, google + "GoogleDot-White.tar.gz"},
+        {"GoogleDot Blue", {"GoogleDot-Blue"}, google + "GoogleDot-Blue.tar.gz"},
+        {"macOS", {"macOS"}, apple + "macOS.tar.xz"},
+        {"macOS White", {"macOS-White"}, apple + "macOS-White.tar.xz"},
+        {"Phinger (dark, light, and left-handed)",
+         {"phinger-cursors-dark", "phinger-cursors-light", "phinger-cursors-dark-left", "phinger-cursors-light-left"},
+         "https://github.com/phisch/phinger-cursors/releases/download/v2.1/phinger-cursors-variants.tar.bz2"},
+    };
+    return list;
+}
+
+// curl and bsdtar both come with every Arch install (pacman needs them), and
+// bsdtar unpacks zip and every tar flavour alike. Any folder in the archive
+// with a cursors/ inside is a theme and moves into place.
+static const char *kInstallCursorScript = R"sh(
+set -e
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+curl -fsSL "$1" -o "$tmp/archive"
+mkdir "$tmp/x"
+bsdtar -xf "$tmp/archive" -C "$tmp/x"
+mkdir -p "$2"
+find "$tmp/x" -mindepth 2 -maxdepth 4 -type d -name cursors | while read -r c; do
+  theme=$(dirname "$c")
+  rm -rf "$2/$(basename "$theme")"
+  mv "$theme" "$2/"
+done
+)sh";
+
 // The file sets it for apps launched from now on; these switch the pointer
 // that's on screen and tell GTK apps, which read gsettings instead.
 static void applyCursorLive(const CursorSetting &s)
@@ -498,6 +577,11 @@ public:
             sizeRow->addWidget(b);
         }
         sizeRow->addStretch();
+        auto *more = new QPushButton("Get more styles");
+        more->setObjectName("chip");
+        more->setCursor(Qt::PointingHandCursor);
+        sizeRow->addWidget(more);
+        connect(more, &QPushButton::clicked, this, [this] { showDownloads(); });
         outer->addLayout(sizeRow);
 
         grid = new QWidget;
@@ -632,8 +716,86 @@ private:
             gridLayout->addWidget(cards[i], i / cols, i % cols);
     }
 
+    void showDownloads()
+    {
+        auto *dialog = new QWidget(window(), Qt::Dialog);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setObjectName("root");
+        dialog->setWindowTitle("More pointer styles");
+        auto *col = new QVBoxLayout(dialog);
+        col->setContentsMargins(24, 20, 24, 20);
+        col->setSpacing(10);
+        auto *intro = new QLabel("Free pointer styles from their makers' GitHub pages. They go in "
+                                 "~/.local/share/icons, so no password is needed.");
+        intro->setObjectName("quiet");
+        intro->setWordWrap(true);
+        col->addWidget(intro);
+        auto *listWidget = new QWidget;
+        auto *list = new QVBoxLayout(listWidget);
+        list->setContentsMargins(0, 0, 8, 0);
+        list->setSpacing(10);
+        auto *scroll = new QScrollArea;
+        scroll->setWidget(listWidget);
+        scroll->setWidgetResizable(true);
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        col->addWidget(scroll, 1);
+
+        const QString iconsDir = QDir::homePath() + "/.local/share/icons";
+        for (const CursorDownload &d : cursorDownloads()) {
+            auto *row = new QHBoxLayout;
+            row->addWidget(new QLabel(d.name), 1);
+            auto *get = new QPushButton;
+            get->setObjectName("chip");
+            get->setCursor(Qt::PointingHandCursor);
+            auto installed = [d] {
+                for (const QString &id : d.ids)
+                    if (findThemeDir(id).isEmpty())
+                        return false;
+                return true;
+            };
+            get->setText(installed() ? "Installed" : "Install");
+            get->setEnabled(!installed());
+            row->addWidget(get);
+            list->addLayout(row);
+            connect(get, &QPushButton::clicked, this, [this, get, d, iconsDir, installed] {
+                get->setText("Downloading…");
+                get->setEnabled(false);
+                auto *p = new QProcess(this);
+                connect(p, &QProcess::finished, this, [this, p, get, installed](int code) {
+                    p->deleteLater();
+                    const bool ok = code == 0 && installed();
+                    get->setText(ok ? "Installed" : "Failed, try again");
+                    get->setEnabled(!ok);
+                    if (ok)
+                        rescan();
+                });
+                p->start("sh", {"-c", kInstallCursorScript, "sh", d.url, iconsDir});
+            });
+        }
+        list->addStretch();
+        dialog->resize(520, 560);
+        dialog->show();
+    }
+
+    // New styles arrived: rebuild the cards from what's installed now.
+    void rescan()
+    {
+        for (ThemeCard *c : std::as_const(cards)) {
+            cardGroup->removeButton(c);
+            gridLayout->removeWidget(c);
+            c->deleteLater();
+        }
+        cards.clear();
+        columns = 0;
+        buildCards();
+        firstLoad = true;
+        reloadFromFile();
+    }
+
     void save()
     {
+        ensureCursorRequired();
         writeCursorSetting(current);
         applyCursorLive(current);
     }
@@ -649,6 +811,42 @@ private:
     Palette pal;
     int columns = 0;
     bool firstLoad = true;
+};
+
+// ------------------------------------------------------------ slider
+
+// Two things made the stock slider fiddly in a scrolling page: a click on the
+// track only nudged it a step, and scrolling the page over one changed it.
+// This one jumps to where you click and leaves the wheel to the page.
+class Slider : public QSlider
+{
+public:
+    Slider() : QSlider(Qt::Horizontal)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::StrongFocus);
+        setMinimumHeight(28); // a bigger target than the 4px line
+    }
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton) {
+            QStyleOptionSlider opt;
+            initStyleOption(&opt);
+            const QRect handle = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, this);
+            if (!handle.contains(e->position().toPoint())) {
+                const QRect groove = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderGroove, this);
+                const int span = groove.width() - handle.width();
+                const int x = e->position().toPoint().x() - groove.x() - handle.width() / 2;
+                setValue(QStyle::sliderValueFromPosition(minimum(), maximum(), x, qMax(1, span)));
+            }
+        }
+        // The handle is under the pointer now, so this starts a drag.
+        QSlider::mousePressEvent(e);
+    }
+
+    void wheelEvent(QWheelEvent *e) override { e->ignore(); }
 };
 
 // ------------------------------------------------------------ lua settings
@@ -976,9 +1174,8 @@ public:
             const int sides = field.kind == HyprField::Gap ? 4 : 1;
             for (int s = 0; s < sides; ++s) {
                 Control c{f, field.kind == HyprField::Gap ? s : -1};
-                c.slider = new QSlider(Qt::Horizontal);
+                c.slider = new Slider;
                 c.slider->setRange(0, qRound((field.max - field.min) / field.step));
-                c.slider->setCursor(Qt::PointingHandCursor);
                 c.value = new QLabel;
                 c.value->setObjectName("quiet");
                 static const char *sideNames[] = {"top", "right", "bottom", "left"};
@@ -993,7 +1190,12 @@ public:
                 const int index = controls.size();
                 connect(c.slider, &QSlider::valueChanged, this, [this, index] {
                     showValue(controls[index]);
-                    queue(controls[index].field, 250);
+                    queue(controls[index].field, controls[index].slider->isSliderDown() ? 400 : 150);
+                });
+                // Letting go saves at once rather than waiting out the timer.
+                connect(c.slider, &QSlider::sliderReleased, this, [this] {
+                    if (!pending.isEmpty())
+                        saveTimer->start(0);
                 });
                 controls.append(c);
             }
@@ -1138,9 +1340,23 @@ private:
         if (in.open(QIODevice::ReadOnly | QIODevice::Text))
             text = QString::fromUtf8(in.readAll());
         in.close();
-        for (int f : std::as_const(pending))
+        const LuaScan scan = scanLua(text);
+        QStringList missing;
+        for (int f : std::as_const(pending)) {
+            // A bare name is a `local` the file has to define already, like
+            // monitors.lua's omarchy_monitor_scale; adding one wouldn't work.
+            if (!fields[f].path.contains('.') && !scan.values.contains(fields[f].path)) {
+                missing << fields[f].path;
+                continue;
+            }
             text = setLuaValue(text, fields[f].path, luaValue(f));
+        }
         pending.clear();
+        if (!missing.isEmpty()) {
+            errorLabel->setText(QString("%1 has no %2 line to change.")
+                                    .arg(QFileInfo(file).fileName(), missing.join(", ")));
+            errorLabel->show();
+        }
         QSaveFile out(file);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
             return;
@@ -1274,9 +1490,8 @@ static void addLiveSlider(HyprPage *page, const QString &label, int min, int max
                           const QString &unit, std::function<int()> read,
                           std::function<void(int)> write)
 {
-    auto *slider = new QSlider(Qt::Horizontal);
+    auto *slider = new Slider;
     slider->setRange(min / step, max / step);
-    slider->setCursor(Qt::PointingHandCursor);
     auto *value = new QLabel;
     value->setObjectName("quiet");
     page->addRow(label, slider, value);
@@ -1285,14 +1500,22 @@ static void addLiveSlider(HyprPage *page, const QString &label, int min, int max
     auto *apply = new QTimer(page);
     apply->setSingleShot(true);
     apply->setInterval(80);
-    QObject::connect(apply, &QTimer::timeout, page, [slider, step, write] { write(slider->value() * step); });
+    // When we last wrote; reading back too soon can catch the old value
+    // and snap the handle back.
+    auto *wrote = new QElapsedTimer;
+    QObject::connect(slider, &QObject::destroyed, [wrote] { delete wrote; });
+    QObject::connect(apply, &QTimer::timeout, page, [slider, step, write, wrote] {
+        write(slider->value() * step);
+        wrote->start();
+    });
     QObject::connect(slider, &QSlider::valueChanged, page, [show, apply](int pos) {
         show(pos);
         apply->start();
     });
 
-    auto refresh = [slider, step, read, show] {
-        if (slider->isSliderDown())
+    auto refresh = [slider, step, read, show, apply, wrote] {
+        if (slider->isSliderDown() || apply->isActive()
+            || (wrote->isValid() && wrote->elapsed() < 2500))
             return;
         const int now = read();
         if (now < 0 || qRound(qreal(now) / step) == slider->value())
@@ -1442,7 +1665,7 @@ static HyprPage *makeDisplayPage()
         "monitors.lua",
         {
             choiceField("Screen scale (makes everything bigger)", "omarchy_monitor_scale",
-                        {{"100%", "1"}, {"125%", "1.25"}, {"150%", "1.5"}, {"200%", "2"}}),
+                        {{"Auto", "\"auto\""}, {"100%", "1"}, {"125%", "1.25"}, {"150%", "1.5"}, {"200%", "2"}}),
         });
     addLight(page, "Screen brightness", "backlight", "", 5);
     addLiveSlider(
@@ -1659,6 +1882,7 @@ int main(int argc, char *argv[])
         s.theme = args[2];
         if (args.size() >= 4 && args[3].toInt() > 0)
             s.size = args[3].toInt();
+        ensureCursorRequired();
         if (!writeCursorSetting(s))
             return 1;
         applyCursorLive(s);

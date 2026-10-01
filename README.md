@@ -28,10 +28,15 @@ pointer.
 file, and if you edit the file by hand, the app picks up the change right
 away.
 
-**Styles:** 16 extra styles (Bibata, Catppuccin, GoogleDot, macOS and Phinger)
-are installed into `~/.local/share/icons`, so no password was needed. Any style
-added to that folder later shows up the next time the app opens. See
-[Installing more pointer styles](#installing-more-pointer-styles).
+**Styles:** a fresh Omarchy has just Adwaita. **Get more styles** downloads
+16 more (Bibata, Catppuccin, GoogleDot, macOS and Phinger) into
+`~/.local/share/icons`, so no password is needed, and they appear straight
+away. See [Installing more pointer styles](#installing-more-pointer-styles).
+
+**Fresh installs:** `cursor.lua` only counts if `hyprland.lua` loads it, and a
+stock one doesn't. The first time a pointer is saved, the app adds
+`require("hypr.cursor")` to the end of `hyprland.lua` (once), so the choice
+survives a restart.
 
 **Other pages:** Windows, Keyboard & touchpad, and Display (see
 [Pages](#pages)). Sound would fit next. See [Adding a page](#adding-a-page).
@@ -94,7 +99,10 @@ Hyprland rejects the file, the error shows under the page.
 |---|---|---|
 | Windows | `hypr/looknfeel.lua` | gap between windows, each screen edge, border, corner rounding, dimming, animations |
 | Keyboard & touchpad | `hypr/input.lua` | key repeat speed and delay, pointer speed, natural scrolling, scroll speed, ignore while typing, two-finger right-click |
-| Display | `hypr/monitors.lua` | screen scale (`omarchy_monitor_scale`) |
+| Display | `hypr/monitors.lua` | screen scale (`omarchy_monitor_scale`; Auto is Omarchy's default) |
+
+Sliders jump to where you click, and scrolling the page over one scrolls the
+page instead of changing it.
 
 These files are hand-written with comments, so the app never rewrites them
 whole. A small Lua reader in `main.cpp` (`scanLua` / `setLuaValue`) finds
@@ -126,8 +134,11 @@ Write a `QWidget` for it and call `addPage("Name", widget)` in the
 
 ## Installing more pointer styles
 
-No `sudo` needed: unpack a theme into `~/.local/share/icons`. The 16 installed
-so far came from these GitHub releases:
+The **Get more styles** button does this for you. It downloads with `curl`,
+unpacks with `bsdtar` (both ship with every Arch install, and bsdtar handles
+zip and every tar type), and moves any folder with a `cursors/` inside into
+`~/.local/share/icons`. The list is `cursorDownloads()` in `main.cpp`, from
+these GitHub releases:
 
 | Style | Source |
 |---|---|
