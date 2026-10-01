@@ -53,13 +53,50 @@
 #include <QtEndian>
 #include <QtMath>
 #include <QTextStream>
+#include <fontconfig/fontconfig.h>
 
 // ---------------------------------------------------------------- shared look
 
+// The system monospace font, the one `omarchy font set` (and the System font
+// picker) changes. Asked of fontconfig directly with a fresh config, because
+// Qt reads the alias once at startup and wouldn't notice a change.
+static QString gSystemMono;
+
+static QString resolveSystemMono()
+{
+    QString family;
+    FcConfig *config = FcInitLoadConfigAndFonts();
+    FcPattern *pat = FcNameParse(reinterpret_cast<const FcChar8 *>("monospace"));
+    if (config && pat) {
+        FcConfigSubstitute(config, pat, FcMatchPattern);
+        FcDefaultSubstitute(pat);
+        FcResult result;
+        if (FcPattern *match = FcFontMatch(config, pat, &result)) {
+            FcChar8 *name = nullptr;
+            if (FcPatternGetString(match, FC_FAMILY, 0, &name) == FcResultMatch)
+                family = QString::fromUtf8(reinterpret_cast<const char *>(name));
+            FcPatternDestroy(match);
+        }
+    }
+    if (pat)
+        FcPatternDestroy(pat);
+    if (config)
+        FcConfigDestroy(config);
+    return family;
+}
+
 static QString uiFontFamily()
 {
-    const QString sys = QFontInfo(QFont(QStringLiteral("monospace"))).family();
-    return sys.isEmpty() ? QStringLiteral("monospace") : sys;
+    if (gSystemMono.isNull())
+        gSystemMono = resolveSystemMono();
+    return gSystemMono.isEmpty() ? QStringLiteral("monospace") : gSystemMono;
+}
+
+static QString userFontconfigPath()
+{
+    // Honours XDG_CONFIG_HOME, same as fontconfig itself.
+    return QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
+           + "/fontconfig/fonts.conf";
 }
 
 // Surfaces are ink mixed into the page rather than hardcoded greys, the way
@@ -726,7 +763,8 @@ private:
         col->setContentsMargins(24, 20, 24, 20);
         col->setSpacing(10);
         auto *intro = new QLabel("Free pointer styles from their makers' GitHub pages. They go in "
-                                 "~/.local/share/icons, so no password is needed.");
+                                 "~/.local/share/icons, so no password is needed. Remove puts a "
+                                 "style's folder away again; Adwaita, Omarchy's own, always stays.");
         intro->setObjectName("quiet");
         intro->setWordWrap(true);
         col->addWidget(intro);
@@ -754,19 +792,31 @@ private:
                         return false;
                 return true;
             };
-            get->setText(installed() ? "Installed" : "Install");
-            get->setEnabled(!installed());
+            get->setText(installed() ? "Remove" : "Install");
             row->addWidget(get);
             list->addLayout(row);
             connect(get, &QPushButton::clicked, this, [this, get, d, iconsDir, installed] {
+                if (installed()) {
+                    // Only ever from ~/.local/share/icons, where these went.
+                    for (const QString &id : d.ids)
+                        if (!id.isEmpty())
+                            QDir(iconsDir + "/" + id).removeRecursively();
+                    if (d.ids.contains(current.theme)) {
+                        current.theme = QStringLiteral("Adwaita"); // what Omarchy ships
+                        save();
+                    }
+                    rescan();
+                    get->setText(installed() ? "Remove" : "Install");
+                    return;
+                }
                 get->setText("Downloading…");
                 get->setEnabled(false);
                 auto *p = new QProcess(this);
                 connect(p, &QProcess::finished, this, [this, p, get, installed](int code) {
                     p->deleteLater();
                     const bool ok = code == 0 && installed();
-                    get->setText(ok ? "Installed" : "Failed, try again");
-                    get->setEnabled(!ok);
+                    get->setText(ok ? "Remove" : "Failed, try again");
+                    get->setEnabled(true);
                     if (ok)
                         rescan();
                 });
@@ -857,7 +907,8 @@ protected:
 // of a Lua reader to find `key = value` inside nested tables.
 
 struct LuaSpan {
-    int start = -1, end = -1;
+    int start = -1, end = -1; // the value
+    int key = -1;             // where `key =` starts, for removing the line
 };
 
 struct LuaScan {
@@ -899,6 +950,7 @@ static LuaScan scanLua(const QString &t)
     struct Frame {
         QString name; // empty for a table with no key, like hl.config({
         int start;
+        int key;
     };
     QList<Frame> stack;
     auto pathWith = [&stack](const QString &key) {
@@ -936,7 +988,7 @@ static LuaScan scanLua(const QString &t)
             while (v < n && (t[v] == ' ' || t[v] == '\t'))
                 ++v;
             if (v < n && t[v] == '{') {
-                stack.append({key, v});
+                stack.append({key, v, i});
                 out.tables.insert(pathWith(QString()), v + 1);
                 i = v + 1;
                 continue;
@@ -963,16 +1015,16 @@ static LuaScan scanLua(const QString &t)
             int end = e;
             while (end > v && t[end - 1].isSpace())
                 --end;
-            out.values.insert(pathWith(key), {v, end});
+            out.values.insert(pathWith(key), {v, end, i});
             i = e;
             continue;
         }
         if (c == '{') {
-            stack.append({QString(), -1});
+            stack.append({QString(), -1, -1});
         } else if (c == '}' && !stack.isEmpty()) {
             const Frame f = stack.takeLast();
             if (!f.name.isEmpty())
-                out.values.insert(pathWith(f.name), {f.start, i + 1});
+                out.values.insert(pathWith(f.name), {f.start, i + 1, f.key});
         }
         ++i;
     }
@@ -1013,6 +1065,51 @@ static QString setLuaValue(QString t, const QString &path, const QString &value)
     if (!t.isEmpty() && !t.endsWith('\n'))
         t += '\n';
     return t + "\nhl.config({\n" + nestedLua(parts, value, unit, unit) + "})\n";
+}
+
+// Takes the setting out, so Omarchy's default applies again. A line holding
+// only it goes whole, comment and all.
+static QString removeLuaValue(QString t, const QString &path)
+{
+    const LuaScan scan = scanLua(t);
+    if (!scan.values.contains(path))
+        return t;
+    const LuaSpan s = scan.values.value(path);
+    int to = s.end;
+    while (to < t.size() && (t[to] == ' ' || t[to] == '\t'))
+        ++to;
+    if (to < t.size() && t[to] == ',')
+        ++to;
+    const int lineStart = t.lastIndexOf('\n', s.key - 1) + 1;
+    int lineEnd = t.indexOf('\n', to);
+    if (lineEnd < 0)
+        lineEnd = t.size();
+    const QString rest = t.mid(to, lineEnd - to).trimmed();
+    if (t.mid(lineStart, s.key - lineStart).trimmed().isEmpty() && (rest.isEmpty() || rest.startsWith("--")))
+        return t.remove(lineStart, qMin(int(t.size()), lineEnd + 1) - lineStart);
+    return t.remove(s.key, to - s.key);
+}
+
+// The copy of a config file a fresh Omarchy starts with.
+static QString stockConfigPath(const QString &fileName)
+{
+    const QString root = qEnvironmentVariable("OMARCHY_PATH", "/usr/share/omarchy");
+    return root + "/config/hypr/" + fileName;
+}
+
+// The value a fresh install's file gives `path`, or a null string when it
+// leaves it to Omarchy's defaults (the usual case: those files are comments).
+static QString stockLuaValue(const QString &fileName, const QString &path)
+{
+    QFile f(stockConfigPath(fileName));
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return QString();
+    const QString text = QString::fromUtf8(f.readAll());
+    const LuaScan scan = scanLua(text);
+    if (!scan.values.contains(path))
+        return QString();
+    const LuaSpan s = scan.values.value(path);
+    return text.mid(s.start, s.end - s.start);
 }
 
 // What Hyprland is using right now, written the way the Lua file would
@@ -1151,6 +1248,8 @@ public:
                     c.toggle->addButton(b, id);
                     chips->addWidget(b);
                 }
+                c.reset = makeReset(f, false);
+                chips->insertWidget(0, c.reset);
                 grid->addWidget(rowLabel(field.label), row, 0);
                 grid->addLayout(chips, row++, 1, Qt::AlignRight);
                 grid->setRowMinimumHeight(row++, 10);
@@ -1164,7 +1263,9 @@ public:
                 QStringList labels;
                 for (const auto &choice : field.choices)
                     labels << choice.first;
-                grid->addWidget(rowLabel(field.label), row++, 0, 1, 2);
+                c.reset = makeReset(f, false);
+                grid->addWidget(rowLabel(field.label), row, 0);
+                grid->addLayout(withReset(nullptr, c.reset), row++, 1, Qt::AlignRight);
                 grid->addWidget(chipRow(labels, c.toggle), row++, 0, 1, 2);
                 grid->setRowMinimumHeight(row++, 10);
                 connect(c.toggle, &QButtonGroup::idClicked, this, [this, f] { queue(f, 0); });
@@ -1183,8 +1284,9 @@ public:
                                                  : QString("%1, %2").arg(field.label, sideNames[s]);
                 // Name and number on one line, the slider full width below,
                 // so it still fits when the window is tiled narrow.
+                c.reset = makeReset(f, sides > 1);
                 grid->addWidget(rowLabel(label), row, 0);
-                grid->addWidget(c.value, row++, 1, Qt::AlignRight);
+                grid->addLayout(withReset(c.value, c.reset), row++, 1, Qt::AlignRight);
                 grid->addWidget(c.slider, row++, 0, 1, 2);
                 grid->setRowMinimumHeight(row++, 10);
                 const int index = controls.size();
@@ -1222,7 +1324,13 @@ public:
         openFile->setObjectName("chip");
         openFile->setCursor(Qt::PointingHandCursor);
         footer->addLayout(notes, 1);
+        tryDefaults = new QPushButton;
+        tryDefaults->setObjectName("chip");
+        tryDefaults->setCursor(Qt::PointingHandCursor);
+        connect(tryDefaults, &QPushButton::clicked, this, [this] { toggleDefaults(); });
+        footer->addWidget(tryDefaults, 0, Qt::AlignTop);
         footer->addWidget(openFile, 0, Qt::AlignTop);
+        updateDefaultsButton();
         outer->addLayout(footer);
         connect(openFile, &QPushButton::clicked, this, [this] {
             if (!QProcess::startDetached("omarchy-launch-editor", {file}))
@@ -1274,7 +1382,33 @@ private:
         QSlider *slider = nullptr;
         QLabel *value = nullptr;
         QButtonGroup *toggle = nullptr;
+        QPushButton *reset = nullptr;
     };
+
+    // ↺ beside a setting the file changes; it puts Omarchy's back.
+    QPushButton *makeReset(int field, bool gap)
+    {
+        auto *b = new QPushButton("↺");
+        b->setObjectName("reset");
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(gap ? "Use Omarchy's default for all four edges" : "Use Omarchy's default");
+        QSizePolicy sp = b->sizePolicy();
+        sp.setRetainSizeWhenHidden(true); // so rows don't shift as it comes and goes
+        b->setSizePolicy(sp);
+        b->hide();
+        connect(b, &QPushButton::clicked, this, [this, field] { resetField(field); });
+        return b;
+    }
+
+    static QHBoxLayout *withReset(QWidget *w, QPushButton *reset)
+    {
+        auto *row = new QHBoxLayout;
+        row->setSpacing(8);
+        row->addWidget(reset);
+        if (w)
+            row->addWidget(w);
+        return row;
+    }
 
     double sliderValue(const Control &c) const
     {
@@ -1357,6 +1491,11 @@ private:
                                     .arg(QFileInfo(file).fileName(), missing.join(", ")));
             errorLabel->show();
         }
+        writeAndApply(text);
+    }
+
+    void writeAndApply(const QString &text)
+    {
         QSaveFile out(file);
         if (!out.open(QIODevice::WriteOnly | QIODevice::Text))
             return;
@@ -1365,9 +1504,12 @@ private:
             return;
 
         // Reload so it applies now, then say so if Hyprland didn't like it.
+        // Reading back afterwards picks up defaults for removed settings,
+        // which only hyprctl knows.
         auto *reload = new QProcess(this);
         connect(reload, &QProcess::finished, this, [this, reload] {
             reload->deleteLater();
+            load();
             auto *check = new QProcess(this);
             connect(check, &QProcess::finished, this, [this, check] {
                 check->deleteLater();
@@ -1376,6 +1518,61 @@ private:
             check->start("hyprctl", {"configerrors"});
         });
         reload->start("hyprctl", {"reload"});
+    }
+
+    void resetField(int f)
+    {
+        pending.remove(f);
+        QFile in(file);
+        QString text;
+        if (in.open(QIODevice::ReadOnly | QIODevice::Text))
+            text = QString::fromUtf8(in.readAll());
+        in.close();
+        const QString stock = stockLuaValue(QFileInfo(file).fileName(), fields[f].path);
+        writeAndApply(stock.isNull() ? removeLuaValue(text, fields[f].path)
+                                     : setLuaValue(text, fields[f].path, stock));
+    }
+
+    // Your own file waits here while you try Omarchy's, until Undo.
+    QString keptPath() const
+    {
+        return QDir::homePath() + "/.local/state/omasettings/" + QFileInfo(file).fileName() + ".mine";
+    }
+
+    void updateDefaultsButton()
+    {
+        const bool trying = QFileInfo::exists(keptPath());
+        tryDefaults->setText(trying ? "Undo, back to mine" : "Try Omarchy defaults");
+        tryDefaults->setToolTip(trying ? "Put your own " + QFileInfo(file).fileName() + " back"
+                                       : "Swap in a fresh install's " + QFileInfo(file).fileName()
+                                             + ". Yours is kept until you undo.");
+    }
+
+    void toggleDefaults()
+    {
+        const QString kept = keptPath();
+        QString text;
+        if (QFileInfo::exists(kept)) {
+            QFile mine(kept);
+            if (!mine.open(QIODevice::ReadOnly | QIODevice::Text))
+                return;
+            text = QString::fromUtf8(mine.readAll());
+            mine.close();
+            writeAndApply(text);
+            QFile::remove(kept);
+        } else {
+            QFile stock(stockConfigPath(QFileInfo(file).fileName()));
+            if (!stock.open(QIODevice::ReadOnly | QIODevice::Text))
+                return;
+            text = QString::fromUtf8(stock.readAll());
+            QDir().mkpath(QFileInfo(kept).absolutePath());
+            QFile::remove(kept);
+            if (!QFile::copy(file, kept))
+                return; // never swap without a copy to come back to
+            writeAndApply(text);
+        }
+        pending.clear();
+        updateDefaultsButton();
     }
 
     void showErrors(const QString &errors)
@@ -1411,6 +1608,12 @@ private:
         for (Control &c : controls) {
             const HyprField &f = fields[c.field];
             const QString v = lua.value(c.field).trimmed();
+            if (c.reset) {
+                QString stock = stockLuaValue(QFileInfo(file).fileName(), f.path);
+                QString mine = v;
+                c.reset->setVisible(scan.values.contains(f.path)
+                                    && (stock.isNull() || stock.remove(' ') != mine.remove(' ')));
+            }
             if (f.kind == HyprField::Choice) {
                 // Matched ignoring spaces, so "{4,3}" is the "{ 4, 3 }" chip.
                 QString bare = v;
@@ -1455,6 +1658,7 @@ private:
     QSet<int> pending;
     QTimer *saveTimer;
     QLabel *fileLabel, *errorLabel;
+    QPushButton *tryDefaults;
     QFileSystemWatcher *watcher;
 };
 
@@ -1762,6 +1966,28 @@ public:
             if (!themeWatcher->files().contains(f))
                 themeWatcher->addPath(f);
         });
+
+        // Re-letter live when the system font changes. The file may not
+        // exist yet, so its folder is watched too; the timer folds the
+        // truncate-then-write into one.
+        fontWatcher = new QFileSystemWatcher(this);
+        auto *fontDebounce = new QTimer(this);
+        fontDebounce->setSingleShot(true);
+        fontDebounce->setInterval(250);
+        watchFontconfig();
+        connect(fontWatcher, &QFileSystemWatcher::fileChanged, fontDebounce, qOverload<>(&QTimer::start));
+        connect(fontWatcher, &QFileSystemWatcher::directoryChanged, fontDebounce, qOverload<>(&QTimer::start));
+        connect(fontDebounce, &QTimer::timeout, this, [this] {
+            watchFontconfig();
+            const QString was = gSystemMono;
+            gSystemMono = resolveSystemMono();
+            if (gSystemMono != was) {
+                applyPalette();
+                pointer->update();
+                for (QWidget *w : pointer->findChildren<QWidget *>())
+                    w->update(); // the cards paint their names themselves
+            }
+        });
     }
 
     void showPage(const QString &word)
@@ -1800,6 +2026,17 @@ protected:
     }
 
 private:
+    void watchFontconfig()
+    {
+        const QString file = userFontconfigPath();
+        const QString dir = QFileInfo(file).absolutePath();
+        QDir().mkpath(dir);
+        if (!fontWatcher->directories().contains(dir))
+            fontWatcher->addPath(dir);
+        if (QFileInfo::exists(file) && !fontWatcher->files().contains(file))
+            fontWatcher->addPath(file);
+    }
+
     void addPage(const QString &name, QWidget *page)
     {
         sidebar->addItem(name);
@@ -1836,6 +2073,9 @@ private:
                     "  min-height: 32px; }"
                     "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
                     "QLabel#error { color: #e06c75; }"
+                    "QPushButton#reset { background: transparent; color: %4; border: none;"
+                    "  font-size: 14pt; padding: 0 4px; }"
+                    "QPushButton#reset:hover { color: %3; }"
                     "QSlider::groove:horizontal { height: 4px; background: %6; border-radius: 2px; }"
                     "QSlider::sub-page:horizontal { background: %3; border-radius: 2px; }"
                     "QSlider::handle:horizontal { background: %2; width: 16px; height: 16px;"
@@ -1854,6 +2094,7 @@ private:
     QStackedWidget *stack;
     PointerPage *pointer;
     QFileSystemWatcher *themeWatcher;
+    QFileSystemWatcher *fontWatcher;
 };
 
 int main(int argc, char *argv[])
