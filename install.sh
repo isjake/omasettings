@@ -19,11 +19,13 @@ if [ "$1" = "--remove" ]; then
     exit 0
 fi
 
-# Build tools: compiler, make, Qt 6, fontconfig.
+# Build tools: compiler, make, Qt 6, fontconfig. Checked by what the build
+# uses rather than by package name, so a compiler installed without the
+# base-devel group still counts.
 missing=""
-for p in base-devel qt6-base fontconfig pkgconf; do
-    pacman -Qq "$p" >/dev/null 2>&1 || missing="$missing $p"
-done
+{ command -v g++ && command -v make; } >/dev/null 2>&1 || missing="$missing base-devel"
+command -v qmake6 >/dev/null 2>&1 || missing="$missing qt6-base"
+[ -f /usr/include/fontconfig/fontconfig.h ] || missing="$missing fontconfig"
 if [ -n "$missing" ]; then
     echo "Installing build tools:$missing"
     sudo pacman -S --needed --noconfirm $missing
