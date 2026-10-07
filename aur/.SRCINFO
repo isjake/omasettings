@@ -7,7 +7,6 @@ pkgbase = omasettings-git
 	arch = aarch64
 	license = LicenseRef-TODO
 	makedepends = git
-	makedepends = pkgconf
 	depends = qt6-base
 	depends = fontconfig
 	depends = hyprland
