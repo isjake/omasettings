@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="Click-through settings app for Omarchy (pointer, fonts, windows, keyboard, display)"
 arch=('x86_64' 'aarch64')
 url="https://github.com/isjake/omasettings"
-license=('LicenseRef-TODO')
+license=('MIT')
 depends=('qt6-base' 'fontconfig' 'hyprland' 'curl' 'libarchive' 'glib2' 'xdg-utils')
 makedepends=('git')
 provides=("$_name")
@@ -35,4 +35,5 @@ package() {
     install -Dm644 "data/$_name.desktop" "$pkgdir/usr/share/applications/$_name.desktop"
     install -Dm644 "data/$_name.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/$_name.svg"
     install -Dm644 README.md "$pkgdir/usr/share/doc/$_name/README.md"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$_name/LICENSE"
 }
