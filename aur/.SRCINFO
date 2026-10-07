@@ -1,0 +1,23 @@
+pkgbase = omasettings-git
+	pkgdesc = Click-through settings app for Omarchy (pointer, fonts, windows, keyboard, display)
+	pkgver = r6.caab55f
+	pkgrel = 1
+	url = https://github.com/isjake/omasettings
+	arch = x86_64
+	arch = aarch64
+	license = LicenseRef-TODO
+	makedepends = git
+	makedepends = pkgconf
+	depends = qt6-base
+	depends = fontconfig
+	depends = hyprland
+	depends = curl
+	depends = libarchive
+	depends = glib2
+	depends = xdg-utils
+	provides = omasettings
+	conflicts = omasettings
+	source = git+https://github.com/isjake/omasettings.git
+	sha256sums = SKIP
+
+pkgname = omasettings-git
