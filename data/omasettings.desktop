@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Omasettings
+GenericName=Settings
+Comment=Click-through settings for Omarchy
+Exec=omasettings
+Icon=omasettings
+Terminal=false
+Categories=Settings;Utility;
+Keywords=settings;preferences;cursor;pointer;mouse;
+StartupNotify=true
+StartupWMClass=omasettings

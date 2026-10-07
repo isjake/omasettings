@@ -41,18 +41,26 @@ survives a restart.
 **Other pages:** Windows, Keyboard & touchpad, and Display (see
 [Pages](#pages)). Sound would fit next. See [Adding a page](#adding-a-page).
 
-## Build
+## Install
 
-Needs `qt6-base`.
+```sh
+git clone https://github.com/isjake/omasettings.git
+cd omasettings && ./install.sh
+```
+
+It installs any missing build tools (`qt6-base`, `base-devel`; asks for your
+password only then), builds the app, and puts it in your app launcher. Nothing
+goes outside your home folder. `./install.sh --remove` uninstalls;
+`./install.sh --link` links to the build in this folder instead of copying it,
+so `make` updates the installed app (handy while working on it).
+
+## Build by hand
 
 ```sh
 qmake6 omasettings.pro -o Makefile
 make -j$(nproc)
 ./omasettings
 ```
-
-`~/.local/bin/omasettings` links to the built binary, and
-`~/.local/share/applications/omasettings.desktop` puts it in the launcher.
 
 ## Use
 
