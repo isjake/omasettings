@@ -105,8 +105,8 @@ Hyprland rejects the file, the error shows under the page.
 
 | Page | File | Settings |
 |---|---|---|
-| Windows | `hypr/looknfeel.lua` | gap between windows, each screen edge, border, corner rounding, dimming, animations |
-| Keyboard & touchpad | `hypr/input.lua` | key repeat speed and delay, pointer speed, natural scrolling, scroll speed, ignore while typing, two-finger right-click |
+| Windows | `hypr/looknfeel.lua` | gap between windows, each screen edge, border, corner rounding, opacity (focused and other windows), blur, shadows, dimming, tiling layout, resize by dragging edges, animations |
+| Keyboard & touchpad | `hypr/input.lua` | key repeat speed and delay, pointer speed, natural scrolling, scroll speed, ignore while typing, two-finger right-click, mouse acceleration, focus follows pointer, hide pointer while typing, Num Lock at login |
 | Display | `hypr/monitors.lua` | screen scale (`omarchy_monitor_scale`; Auto is Omarchy's default) |
 
 **Trying the defaults:** a ↺ shows beside every setting the file changes;
@@ -120,8 +120,13 @@ folder from `~/.local/share/icons`, switching to Adwaita if it was in use.
 The app's font is the system monospace font and follows `omarchy font set`
 live, the same as omatimer.
 
-Sliders jump to where you click, and scrolling the page over one scrolls the
-page instead of changing it.
+Sliders jump to where you click (and keep dragging from there), and
+scrolling the page over one scrolls the page instead of changing it. Click the
+number beside a slider to type a value: Enter or clicking away sets it,
+Escape cancels. The unit is optional.
+
+**Ctrl +** / **Ctrl −** (or Ctrl and the scroll wheel) make the app's text
+bigger or smaller; **Ctrl 0** resets. The size is remembered.
 
 These files are hand-written with comments, so the app never rewrites them
 whole. A small Lua reader in `main.cpp` (`scanLua` / `setLuaValue`) finds

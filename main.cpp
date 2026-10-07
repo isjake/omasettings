@@ -19,12 +19,17 @@
 #include <QGridLayout>
 #include <QLabel>
 #include <QMouseEvent>
+#include <QLineEdit>
+#include <QProxyStyle>
+#include <QSettings>
+#include <QShortcut>
 #include <QWheelEvent>
 #include <QStyleOptionSlider>
 #include <QElapsedTimer>
 #include <QMessageBox>
 #include <QComboBox>
 #include <functional>
+#include <memory>
 #include <QSlider>
 #include <QSignalBlocker>
 #include <QListWidget>
@@ -61,6 +66,9 @@
 // picker) changes. Asked of fontconfig directly with a fresh config, because
 // Qt reads the alias once at startup and wouldn't notice a change.
 static QString gSystemMono;
+
+// How big the app's own text is drawn: Ctrl +/- change it, Ctrl 0 resets.
+static double gZoom = 1.0;
 
 static QString resolveSystemMono()
 {
@@ -510,6 +518,12 @@ public:
         } else {
             unsetCursor();
         }
+        refit();
+    }
+
+    // After a zoom, so the name still fits under the shapes.
+    void refit()
+    {
         setFixedSize(sizeHint());
         update();
     }
@@ -517,7 +531,7 @@ public:
     QSize sizeHint() const override
     {
         const int cell = qMax(pointerSize, 24) + 16;
-        return QSize(qMax(4 * cell + 32, 240), cell + 56);
+        return QSize(qMax(4 * cell + 32, int(240 * gZoom)), cell + 32 + labelHeight());
     }
 
 protected:
@@ -566,16 +580,18 @@ protected:
         }
 
         QFont f(uiFontFamily());
-        f.setPointSizeF(10);
+        f.setPointSizeF(10 * gZoom);
         f.setBold(isChecked());
         p.setFont(f);
         p.setPen(isChecked() ? pal.accent : pal.ink);
-        const QRect label(12, top + cell + 8, width() - 24, 24);
+        const QRect label(12, top + cell + 8, width() - 24, labelHeight());
         p.drawText(label, Qt::AlignCenter,
                    QFontMetrics(f).elidedText(theme.name, Qt::ElideRight, label.width()));
     }
 
 private:
+    static int labelHeight() { return qRound(24 * gZoom); }
+
     Palette pal;
     QList<CursorImage> shapes;
     int pointerSize = 24;
@@ -637,6 +653,7 @@ public:
         auto *footer = new QHBoxLayout;
         fileLabel = new QLabel;
         fileLabel->setObjectName("quiet");
+        fileLabel->setWordWrap(true); // or, zoomed in, it squeezes the buttons
         fileLabel->setWordWrap(true);
         auto *openFile = new QPushButton("Open file");
         openFile->setObjectName("chip");
@@ -867,7 +884,23 @@ private:
 
 // Two things made the stock slider fiddly in a scrolling page: a click on the
 // track only nudged it a step, and scrolling the page over one changed it.
-// This one jumps to where you click and leaves the wheel to the page.
+// The app style makes a left click jump the handle to the pointer (and keep
+// dragging from there), the same way for every slider; this one leaves the
+// wheel to the page.
+class AppStyle : public QProxyStyle
+{
+public:
+    int styleHint(StyleHint hint, const QStyleOption *option, const QWidget *widget,
+                  QStyleHintReturn *returnData) const override
+    {
+        if (hint == SH_Slider_AbsoluteSetButtons)
+            return Qt::LeftButton;
+        if (hint == SH_Slider_PageSetButtons)
+            return Qt::NoButton;
+        return QProxyStyle::styleHint(hint, option, widget, returnData);
+    }
+};
+
 class Slider : public QSlider
 {
 public:
@@ -879,24 +912,72 @@ public:
     }
 
 protected:
-    void mousePressEvent(QMouseEvent *e) override
+    void wheelEvent(QWheelEvent *e) override { e->ignore(); }
+};
+
+// The number beside a slider. It reads like a label, but click it and type
+// a value; Enter or clicking away sets it, Escape puts the old one back.
+// Units are optional when typing ("12" and "12 px" both work).
+class ValueBox : public QLineEdit
+{
+public:
+    explicit ValueBox(std::function<void(double)> onTyped) : typed(std::move(onTyped))
     {
-        if (e->button() == Qt::LeftButton) {
-            QStyleOptionSlider opt;
-            initStyleOption(&opt);
-            const QRect handle = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderHandle, this);
-            if (!handle.contains(e->position().toPoint())) {
-                const QRect groove = style()->subControlRect(QStyle::CC_Slider, &opt, QStyle::SC_SliderGroove, this);
-                const int span = groove.width() - handle.width();
-                const int x = e->position().toPoint().x() - groove.x() - handle.width() / 2;
-                setValue(QStyle::sliderValueFromPosition(minimum(), maximum(), x, qMax(1, span)));
-            }
-        }
-        // The handle is under the pointer now, so this starts a drag.
-        QSlider::mousePressEvent(e);
+        setObjectName("value");
+        setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        setToolTip("Click to type a value");
+        connect(this, &QLineEdit::editingFinished, this, [this] {
+            static const QRegularExpression num("-?\\d*\\.?\\d+");
+            const auto m = num.match(text().replace(',', '.'));
+            if (m.hasMatch())
+                typed(m.captured().toDouble());
+            setText(shown); // what was set, rounded to a step and kept in range
+            clearFocus();
+        });
     }
 
-    void wheelEvent(QWheelEvent *e) override { e->ignore(); }
+    void setShown(const QString &text)
+    {
+        shown = text;
+        if (!hasFocus())
+            setText(text);
+        refit();
+    }
+
+    void refit()
+    {
+        setFixedWidth(fontMetrics().horizontalAdvance(shown + "000") + 12);
+    }
+
+protected:
+    void focusInEvent(QFocusEvent *e) override
+    {
+        QLineEdit::focusInEvent(e);
+        QTimer::singleShot(0, this, [this] { selectAll(); });
+    }
+
+    void keyPressEvent(QKeyEvent *e) override
+    {
+        if (e->key() == Qt::Key_Escape) { // and don't let it close the window
+            blockSignals(true);
+            setText(shown);
+            clearFocus();
+            blockSignals(false);
+            return;
+        }
+        QLineEdit::keyPressEvent(e);
+    }
+
+    void changeEvent(QEvent *e) override
+    {
+        QLineEdit::changeEvent(e);
+        if (e->type() == QEvent::FontChange || e->type() == QEvent::StyleChange)
+            refit();
+    }
+
+private:
+    std::function<void(double)> typed;
+    QString shown;
 };
 
 // ------------------------------------------------------------ lua settings
@@ -1277,8 +1358,8 @@ public:
                 Control c{f, field.kind == HyprField::Gap ? s : -1};
                 c.slider = new Slider;
                 c.slider->setRange(0, qRound((field.max - field.min) / field.step));
-                c.value = new QLabel;
-                c.value->setObjectName("quiet");
+                const int index = controls.size();
+                c.value = new ValueBox([this, index](double v) { typeValue(index, v); });
                 static const char *sideNames[] = {"top", "right", "bottom", "left"};
                 const QString label = sides == 1 ? field.label
                                                  : QString("%1, %2").arg(field.label, sideNames[s]);
@@ -1289,7 +1370,6 @@ public:
                 grid->addLayout(withReset(c.value, c.reset), row++, 1, Qt::AlignRight);
                 grid->addWidget(c.slider, row++, 0, 1, 2);
                 grid->setRowMinimumHeight(row++, 10);
-                const int index = controls.size();
                 connect(c.slider, &QSlider::valueChanged, this, [this, index] {
                     showValue(controls[index]);
                     queue(controls[index].field, controls[index].slider->isSliderDown() ? 400 : 150);
@@ -1314,6 +1394,7 @@ public:
         auto *notes = new QVBoxLayout;
         fileLabel = new QLabel(QString("Saved to %1").arg(QString(file).replace(QDir::homePath(), "~")));
         fileLabel->setObjectName("quiet");
+        fileLabel->setWordWrap(true); // or, zoomed in, it squeezes the buttons
         errorLabel = new QLabel;
         errorLabel->setObjectName("error");
         errorLabel->setWordWrap(true);
@@ -1380,7 +1461,7 @@ private:
         int field;
         int side = -1; // which edge, for a gap
         QSlider *slider = nullptr;
-        QLabel *value = nullptr;
+        ValueBox *value = nullptr;
         QButtonGroup *toggle = nullptr;
         QPushButton *reset = nullptr;
     };
@@ -1436,7 +1517,19 @@ private:
     void showValue(const Control &c)
     {
         const HyprField &f = fields[c.field];
-        c.value->setText(number(sliderValue(c), decimals(f)) + (f.unit.isEmpty() ? "" : " " + f.unit));
+        c.value->setShown(number(sliderValue(c), decimals(f)) + (f.unit.isEmpty() ? "" : " " + f.unit));
+    }
+
+    // A typed number lands on the nearest step, within the slider's range,
+    // and saves straight away.
+    void typeValue(int index, double v)
+    {
+        Control &c = controls[index];
+        const HyprField &f = fields[c.field];
+        c.slider->setValue(qRound((qBound(f.min, v, f.max) - f.min) / f.step));
+        showValue(c);
+        if (!pending.isEmpty())
+            saveTimer->start(0);
     }
 
     QString luaValue(int field) const
@@ -1615,16 +1708,24 @@ private:
                                     && (stock.isNull() || stock.remove(' ') != mine.remove(' ')));
             }
             if (f.kind == HyprField::Choice) {
-                // Matched ignoring spaces, so "{4,3}" is the "{ 4, 3 }" chip.
+                // Matched ignoring spaces and quotes, so "{4,3}" is the
+                // "{ 4, 3 }" chip and hyprctl's bare dwindle is "dwindle".
                 QString bare = v;
-                bare.remove(' ');
+                bare.remove(' ').remove('"');
                 QSignalBlocker block(c.toggle);
                 c.toggle->setExclusive(false);
+                bool any = false;
                 for (int i = 0; i < f.choices.size(); ++i) {
                     QString want = f.choices[i].second;
-                    c.toggle->button(i)->setChecked(want.remove(' ') == bare
-                                                    || (want.toDouble() != 0 && want.toDouble() == bare.toDouble()));
+                    want.remove(' ').remove('"');
+                    const bool on = want == bare || (want.toDouble() != 0 && want.toDouble() == bare.toDouble());
+                    c.toggle->button(i)->setChecked(on);
+                    any = any || on;
                 }
+                // Unset (hyprctl says "[[EMPTY]]") means the first choice,
+                // which is always the one Hyprland falls back to.
+                if (!any && !scan.values.contains(f.path))
+                    c.toggle->button(0)->setChecked(true);
                 c.toggle->setExclusive(true);
                 continue;
             }
@@ -1696,10 +1797,9 @@ static void addLiveSlider(HyprPage *page, const QString &label, int min, int max
 {
     auto *slider = new Slider;
     slider->setRange(min / step, max / step);
-    auto *value = new QLabel;
-    value->setObjectName("quiet");
+    auto *value = new ValueBox([slider, step](double v) { slider->setValue(qRound(v / step)); });
     page->addRow(label, slider, value);
-    auto show = [value, step, unit](int pos) { value->setText(QString("%1 %2").arg(pos * step).arg(unit)); };
+    auto show = [value, step, unit](int pos) { value->setShown(QString("%1 %2").arg(pos * step).arg(unit)); };
 
     auto *apply = new QTimer(page);
     apply->setSingleShot(true);
@@ -1811,15 +1911,23 @@ static HyprPage *makeWindowsPage()
 {
     auto *page = new HyprPage(
         "Windows",
-        "Spacing, borders and corners for tiled windows. Changes apply as you drag.",
+        "Spacing, borders, corners, see-through and blur. Changes apply as you drag.",
         "looknfeel.lua",
         {
             {"Gap between windows", "general.gaps_in", HyprField::Int, 0, 40, 1, "px"},
             {"Screen edge", "general.gaps_out", HyprField::Gap, 0, 80, 1, "px"},
             {"Border", "general.border_size", HyprField::Int, 0, 10, 1, "px"},
             {"Corner rounding", "decoration.rounding", HyprField::Int, 0, 30, 1, "px"},
+            {"Opacity, focused window (1 = solid)", "decoration.active_opacity", HyprField::Float, 0.3, 1, 0.01, {}},
+            {"Opacity, other windows", "decoration.inactive_opacity", HyprField::Float, 0.3, 1, 0.01, {}},
+            {"Blur behind see-through windows", "decoration.blur.enabled", HyprField::Bool, 0, 1, 1, {}},
+            {"Blur amount", "decoration.blur.size", HyprField::Int, 1, 20, 1, {}},
+            {"Shadows", "decoration.shadow.enabled", HyprField::Bool, 0, 1, 1, {}},
             {"Dim unfocused windows", "decoration.dim_inactive", HyprField::Bool, 0, 1, 1, {}},
             {"Dim amount", "decoration.dim_strength", HyprField::Float, 0, 1, 0.05, {}},
+            choiceField("How windows tile", "general.layout",
+                        {{"Split", "\"dwindle\""}, {"Main + stack", "\"master\""}, {"Side-scrolling", "\"scrolling\""}}),
+            {"Resize by dragging window edges", "general.resize_on_border", HyprField::Bool, 0, 1, 1, {}},
             {"Animations", "animations.enabled", HyprField::Bool, 0, 1, 1, {}},
         });
     addAspectRow(page);
@@ -1900,6 +2008,12 @@ static HyprPage *makeInputPage()
             {"Touchpad scroll speed", "input.touchpad.scroll_factor", HyprField::Float, 0.05, 2, 0.05, {}},
             {"Ignore touchpad while typing", "input.touchpad.disable_while_typing", HyprField::Bool, 0, 1, 1, {}},
             {"Two-finger click is right-click", "input.touchpad.clickfinger_behavior", HyprField::Bool, 0, 1, 1, {}},
+            choiceField("Mouse acceleration", "input.accel_profile",
+                        {{"On", "\"adaptive\""}, {"Off (flat)", "\"flat\""}}),
+            choiceField("Focus", "input.follow_mouse",
+                        {{"Follows the pointer", "1"}, {"Only on click", "0"}}),
+            {"Hide the pointer while typing", "cursor.hide_on_key_press", HyprField::Bool, 0, 1, 1, {}},
+            {"Num Lock on at login", "input.numlock_by_default", HyprField::Bool, 0, 1, 1, {}},
         });
     addLight(page, "Keyboard light", "leds", "kbd_backlight", 0);
     return page;
@@ -1957,6 +2071,28 @@ public:
         });
         sidebar->setCurrentRow(0);
 
+        gZoom = qBound(0.7, QSettings().value("zoom", 1.0).toDouble(), 2.0);
+        // A key bound twice fires neither, and ZoomIn/ZoomOut are often
+        // the same keys as the ones spelled out below.
+        auto taken = std::make_shared<QList<QKeySequence>>();
+        auto zoomKey = [this, taken](const QKeySequence &key, int to) {
+            if (key.isEmpty() || taken->contains(key))
+                return;
+            taken->append(key);
+            auto *sc = new QShortcut(key, this);
+            connect(sc, &QShortcut::activated, this, [this, to] { setZoom(to); });
+        };
+        // Ctrl + is Ctrl Shift = on most keyboards, so plain Ctrl = works too.
+        for (const QKeySequence &k : {QKeySequence(QKeySequence::ZoomIn), QKeySequence("Ctrl+="),
+                                      QKeySequence("Ctrl++")})
+            zoomKey(k, 1);
+        for (const QKeySequence &k : {QKeySequence(QKeySequence::ZoomOut), QKeySequence("Ctrl+-")})
+            zoomKey(k, -1);
+        zoomKey(QKeySequence("Ctrl+0"), 0);
+        // Ctrl and the scroll wheel too, wherever the pointer is: the scroll
+        // areas would otherwise take the wheel before the window sees it.
+        qApp->installEventFilter(this);
+
         applyPalette();
         // Re-tint live when the Omarchy theme changes.
         themeWatcher = new QFileSystemWatcher(this);
@@ -2003,8 +2139,25 @@ protected:
     // Tiled narrow, the pages need the room more than the sidebar does.
     void resizeEvent(QResizeEvent *e) override
     {
-        sidebar->setFixedWidth(qBound(130, int(width() * 0.3), 230));
+        fitSidebar();
         QWidget::resizeEvent(e);
+    }
+
+    bool eventFilter(QObject *o, QEvent *e) override
+    {
+        if (e->type() == QEvent::Wheel) {
+            auto *w = static_cast<QWheelEvent *>(e);
+            if (w->modifiers() & Qt::ControlModifier) {
+                // Trackpads send many small steps; act once a notch adds up.
+                wheelSum += w->angleDelta().y();
+                if (qAbs(wheelSum) >= 120) {
+                    setZoom(wheelSum > 0 ? 1 : -1);
+                    wheelSum = 0;
+                }
+                return true;
+            }
+        }
+        return QWidget::eventFilter(o, e);
     }
 
     void keyPressEvent(QKeyEvent *e) override
@@ -2026,6 +2179,26 @@ protected:
     }
 
 private:
+    void fitSidebar()
+    {
+        sidebar->setFixedWidth(qBound(int(130 * gZoom), int(width() * 0.3), int(230 * gZoom)));
+    }
+
+    // +1 a step bigger, -1 a step smaller, 0 back to normal.
+    void setZoom(int step)
+    {
+        const double to = step == 0 ? 1.0 : qBound(0.7, qRound((gZoom + step * 0.1) * 10) / 10.0, 2.0);
+        if (qFuzzyCompare(to, gZoom))
+            return;
+        gZoom = to;
+        QSettings().setValue("zoom", gZoom);
+        applyPalette();
+        fitSidebar();
+        for (QAbstractButton *b : pointer->findChildren<QAbstractButton *>())
+            if (auto *card = dynamic_cast<ThemeCard *>(b))
+                card->refit();
+    }
+
     void watchFontconfig()
     {
         const QString file = userFontconfigPath();
@@ -2050,17 +2223,18 @@ private:
         const QColor quiet = mix(p.page, p.ink, 0.55);
         const QColor raised = mix(p.page, p.ink, 0.05);
         const QColor line = mix(p.page, p.ink, 0.15);
-        setFont(QFont(uiFontFamily(), 11));
+        auto pt = [](double size) { return QString::number(size * gZoom, 'f', 1) + "pt"; };
+        setFont(QFont(uiFontFamily(), qRound(11 * gZoom)));
         setStyleSheet(
             // The font goes in the sheet too: setFont alone missed rows added
             // after a page was built.
-            QString("QWidget { font-family: \"%7\"; font-size: 11pt; }"
+            QString("QWidget { font-family: \"%7\"; font-size: %8; }"
                     "#root, QStackedWidget, QScrollArea, QScrollArea > QWidget > QWidget"
                     "  { background: %1; color: %2; }"
                     "QLabel { background: transparent; color: %2; }"
-                    "QLabel#title { font-size: 20pt; font-weight: bold; }"
+                    "QLabel#title { font-size: %9; font-weight: bold; }"
                     "QLabel#quiet { color: %4; }"
-                    "#sidebar { font-family: \"%7\"; font-size: 11pt; background: %5; color: %2; border: none;"
+                    "#sidebar { font-family: \"%7\"; font-size: %8; background: %5; color: %2; border: none;"
                     "  border-right: 1px solid %6; padding: 16px 8px; outline: none; }"
                     "#sidebar::item { padding: 10px 12px; border-radius: 6px; }"
                     "#sidebar::item:selected { background: %6; color: %3; }"
@@ -2074,7 +2248,7 @@ private:
                     "QScrollBar::add-line, QScrollBar::sub-line { height: 0; }"
                     "QLabel#error { color: #e06c75; }"
                     "QPushButton#reset { background: transparent; color: %4; border: none;"
-                    "  font-size: 14pt; padding: 0 4px; }"
+                    "  font-size: %10; padding: 0 4px; }"
                     "QPushButton#reset:hover { color: %3; }"
                     "QSlider::groove:horizontal { height: 4px; background: %6; border-radius: 2px; }"
                     "QSlider::sub-page:horizontal { background: %3; border-radius: 2px; }"
@@ -2085,9 +2259,15 @@ private:
                     "QComboBox:hover { border-color: %4; }"
                     "QComboBox QAbstractItemView { background: %5; color: %2;"
                     "  selection-background-color: %3; selection-color: %1; border: 1px solid %6; }"
+                    "QLineEdit#value { background: transparent; color: %4; border: 1px solid transparent;"
+                    "  border-radius: 6px; padding: 2px 6px; selection-background-color: %3;"
+                    "  selection-color: %1; }"
+                    "QLineEdit#value:hover { border-color: %6; }"
+                    "QLineEdit#value:focus { color: %2; background: %5; border-color: %3; }"
                     "QToolTip { background: %5; color: %2; border: 1px solid %6; }")
                 .arg(p.page.name(), p.ink.name(), p.accent.name(), quiet.name(),
-                     raised.name(), line.name(), uiFontFamily()));
+                     raised.name(), line.name(), uiFontFamily())
+                .arg(pt(11), pt(20), pt(14)));
     }
 
     QListWidget *sidebar;
@@ -2095,11 +2275,13 @@ private:
     PointerPage *pointer;
     QFileSystemWatcher *themeWatcher;
     QFileSystemWatcher *fontWatcher;
+    int wheelSum = 0;
 };
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
+    app.setStyle(new AppStyle);
     QCoreApplication::setOrganizationName("omarchy");
     QCoreApplication::setApplicationName("omasettings");
     QGuiApplication::setDesktopFileName("omasettings");
