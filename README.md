@@ -171,3 +171,7 @@ these GitHub releases:
 curl -sLO https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Ice.tar.xz
 tar -xf Bibata-Modern-Ice.tar.xz -C ~/.local/share/icons
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).
