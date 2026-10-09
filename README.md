@@ -54,6 +54,12 @@ goes outside your home folder. `./install.sh --remove` uninstalls;
 `./install.sh --link` links to the build in this folder instead of copying it,
 so `make` updates the installed app (handy while working on it).
 
+To update later, pull and run the installer again:
+
+```sh
+cd omasettings && git pull && ./install.sh
+```
+
 ## Build by hand
 
 ```sh
@@ -70,9 +76,6 @@ omasettings pointer                  # print the current pointer and size
 omasettings pointer Yaru 32          # set it without opening the window
 omasettings --page windows           # open on a page (any word of its name)
 ```
-
-Hyprland's rules in `~/.config/hypr/hyprland.lua` open it floating and
-centered at 1040×680, since a narrow tile is too tight for its pages.
 
 Esc or Ctrl+Q closes the window.
 
