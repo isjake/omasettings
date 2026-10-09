@@ -7,6 +7,10 @@ live.
 
 ![omasettings, mouse pointer page](docs/screenshot.png)
 
+<img src="docs/windows.png" alt="Windows page" width="32%"> <img src="docs/keyboard.png" alt="Keyboard & touchpad page" width="32%"> <img src="docs/display.png" alt="Display page" width="32%">
+
+Watch it in action: [video on r/omarchy](https://www.reddit.com/r/omarchy/comments/1x1pvyo/i_made_omasettings_to_change_window_appearance/).
+
 ## What it is
 
 A native Qt app in the same style as omatimer. Its first page is the mouse
