@@ -1,7 +1,7 @@
 # Maintainer: Jake Ayala <jakeayala@gmail.com>
 pkgname=omasettings-git
 _name=omasettings
-pkgver=r6.caab55f
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Click-through settings app for Omarchy (pointer, fonts, windows, keyboard, display)"
 arch=('x86_64' 'aarch64')
