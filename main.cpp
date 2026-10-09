@@ -603,7 +603,15 @@ class PointerPage : public QWidget
 public:
     explicit PointerPage(QWidget *parent = nullptr) : QWidget(parent)
     {
-        auto *outer = new QVBoxLayout(this);
+        // Two views in place of a pop-out window: the styles you have, and
+        // the ones you can download.
+        views = new QStackedWidget;
+        auto *top = new QVBoxLayout(this);
+        top->setContentsMargins(0, 0, 0, 0);
+        top->addWidget(views);
+        auto *stylesView = new QWidget;
+        views->addWidget(stylesView);
+        auto *outer = new QVBoxLayout(stylesView);
         outer->setContentsMargins(28, 24, 28, 20);
         outer->setSpacing(14);
 
@@ -634,7 +642,10 @@ public:
         more->setObjectName("chip");
         more->setCursor(Qt::PointingHandCursor);
         sizeRow->addWidget(more);
-        connect(more, &QPushButton::clicked, this, [this] { showDownloads(); });
+        connect(more, &QPushButton::clicked, this, [this] {
+            refreshDownloads();
+            views->setCurrentIndex(1);
+        });
         outer->addLayout(sizeRow);
 
         grid = new QWidget;
@@ -692,6 +703,7 @@ public:
 
         buildCards();
         reloadFromFile();
+        views->addWidget(makeDownloadsView());
     }
 
     void setColors(const Palette &p)
@@ -770,79 +782,162 @@ private:
             gridLayout->addWidget(cards[i], i / cols, i % cols);
     }
 
-    void showDownloads()
+    QWidget *makeDownloadsView()
     {
-        auto *dialog = new QWidget(window(), Qt::Dialog);
-        dialog->setAttribute(Qt::WA_DeleteOnClose);
-        dialog->setObjectName("root");
-        dialog->setWindowTitle("More pointer styles");
-        auto *col = new QVBoxLayout(dialog);
-        col->setContentsMargins(24, 20, 24, 20);
-        col->setSpacing(10);
+        auto *view = new QWidget;
+        auto *col = new QVBoxLayout(view);
+        col->setContentsMargins(28, 24, 28, 20);
+        col->setSpacing(14);
+
+        auto *head = new QHBoxLayout;
+        auto *heading = new QLabel("More pointer styles");
+        heading->setObjectName("title");
+        head->addWidget(heading, 1);
+        installAll = new QPushButton("Install all");
+        installAll->setObjectName("chip");
+        installAll->setCursor(Qt::PointingHandCursor);
+        head->addWidget(installAll);
+        removeAll = new QPushButton("Remove all");
+        removeAll->setObjectName("chip");
+        removeAll->setCursor(Qt::PointingHandCursor);
+        head->addWidget(removeAll);
+        auto *back = new QPushButton("Back");
+        back->setObjectName("chip");
+        back->setCursor(Qt::PointingHandCursor);
+        head->addWidget(back);
+        col->addLayout(head);
+        connect(back, &QPushButton::clicked, this, [this] { views->setCurrentIndex(0); });
+        connect(installAll, &QPushButton::clicked, this, [this] {
+            for (int i = 0; i < downloadRows.size(); ++i)
+                installDownload(i);
+        });
+        connect(removeAll, &QPushButton::clicked, this, [this] {
+            for (int i = 0; i < downloadRows.size(); ++i)
+                if (!downloadRows[i].busy)
+                    removeFiles(downloadRows[i].d);
+            rescan();
+            refreshDownloads();
+        });
+
         auto *intro = new QLabel("Free pointer styles from their makers' GitHub pages. They go in "
                                  "~/.local/share/icons, so no password is needed. Remove puts a "
                                  "style's folder away again; Adwaita, Omarchy's own, always stays.");
         intro->setObjectName("quiet");
         intro->setWordWrap(true);
         col->addWidget(intro);
+
         auto *listWidget = new QWidget;
         auto *list = new QVBoxLayout(listWidget);
         list->setContentsMargins(0, 0, 8, 0);
         list->setSpacing(10);
-        auto *scroll = new QScrollArea;
-        scroll->setWidget(listWidget);
-        scroll->setWidgetResizable(true);
-        scroll->setFrameShape(QFrame::NoFrame);
-        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-        col->addWidget(scroll, 1);
+        auto *listScroll = new QScrollArea;
+        listScroll->setWidget(listWidget);
+        listScroll->setWidgetResizable(true);
+        listScroll->setFrameShape(QFrame::NoFrame);
+        listScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        col->addWidget(listScroll, 1);
 
-        const QString iconsDir = QDir::homePath() + "/.local/share/icons";
         for (const CursorDownload &d : cursorDownloads()) {
             auto *row = new QHBoxLayout;
             row->addWidget(new QLabel(d.name), 1);
             auto *get = new QPushButton;
             get->setObjectName("chip");
             get->setCursor(Qt::PointingHandCursor);
-            auto installed = [d] {
-                for (const QString &id : d.ids)
-                    if (findThemeDir(id).isEmpty())
-                        return false;
-                return true;
-            };
-            get->setText(installed() ? "Remove" : "Install");
             row->addWidget(get);
             list->addLayout(row);
-            connect(get, &QPushButton::clicked, this, [this, get, d, iconsDir, installed] {
-                if (installed()) {
-                    // Only ever from ~/.local/share/icons, where these went.
-                    for (const QString &id : d.ids)
-                        if (!id.isEmpty())
-                            QDir(iconsDir + "/" + id).removeRecursively();
-                    if (d.ids.contains(current.theme)) {
-                        current.theme = QStringLiteral("Adwaita"); // what Omarchy ships
-                        save();
-                    }
-                    rescan();
-                    get->setText(installed() ? "Remove" : "Install");
-                    return;
-                }
-                get->setText("Downloading…");
-                get->setEnabled(false);
-                auto *p = new QProcess(this);
-                connect(p, &QProcess::finished, this, [this, p, get, installed](int code) {
-                    p->deleteLater();
-                    const bool ok = code == 0 && installed();
-                    get->setText(ok ? "Remove" : "Failed, try again");
-                    get->setEnabled(true);
-                    if (ok)
-                        rescan();
-                });
-                p->start("sh", {"-c", kInstallCursorScript, "sh", d.url, iconsDir});
+            const int i = downloadRows.size();
+            downloadRows.append({d, get});
+            connect(get, &QPushButton::clicked, this, [this, i] {
+                if (isInstalled(downloadRows[i].d))
+                    removeDownload(i);
+                else
+                    installDownload(i);
             });
         }
         list->addStretch();
-        dialog->resize(520, 560);
-        dialog->show();
+        refreshDownloads();
+        return view;
+    }
+
+    static bool isInstalled(const CursorDownload &d)
+    {
+        for (const QString &id : d.ids)
+            if (findThemeDir(id).isEmpty())
+                return false;
+        return true;
+    }
+
+    static QString iconsDir() { return QDir::homePath() + "/.local/share/icons"; }
+
+    void installDownload(int i)
+    {
+        DownloadRow &r = downloadRows[i];
+        if (r.busy || isInstalled(r.d))
+            return;
+        r.busy = true;
+        r.button->setText("Downloading…");
+        r.button->setEnabled(false);
+        auto *p = new QProcess(this);
+        connect(p, &QProcess::finished, this, [this, p, i](int code) {
+            p->deleteLater();
+            DownloadRow &r = downloadRows[i];
+            r.busy = false;
+            const bool ok = code == 0 && isInstalled(r.d);
+            r.button->setText(ok ? "Remove" : "Failed, try again");
+            r.button->setEnabled(true);
+            // With Install all, rebuild the cards once at the end, not per style.
+            needsRescan |= ok;
+            if (needsRescan && std::none_of(downloadRows.begin(), downloadRows.end(),
+                                            [](const DownloadRow &r) { return r.busy; })) {
+                needsRescan = false;
+                rescan();
+            }
+            updateInstallAll();
+        });
+        p->start("sh", {"-c", kInstallCursorScript, "sh", r.d.url, iconsDir()});
+        updateInstallAll();
+    }
+
+    void removeDownload(int i)
+    {
+        removeFiles(downloadRows[i].d);
+        rescan();
+        refreshDownloads();
+    }
+
+    // Deletes a style's folders; the caller rebuilds the cards after.
+    void removeFiles(const CursorDownload &d)
+    {
+        // Only ever from ~/.local/share/icons, where these went.
+        for (const QString &id : d.ids)
+            if (!id.isEmpty())
+                QDir(iconsDir() + "/" + id).removeRecursively();
+        if (d.ids.contains(current.theme)) {
+            current.theme = QStringLiteral("Adwaita"); // what Omarchy ships
+            save();
+        }
+    }
+
+    void refreshDownloads()
+    {
+        for (const DownloadRow &r : std::as_const(downloadRows))
+            if (!r.busy)
+                r.button->setText(isInstalled(r.d) ? "Remove" : "Install");
+        updateInstallAll();
+    }
+
+    void updateInstallAll()
+    {
+        int busy = 0, missing = 0, installed = 0;
+        for (const DownloadRow &r : std::as_const(downloadRows)) {
+            busy += r.busy;
+            missing += !r.busy && !isInstalled(r.d);
+            installed += !r.busy && isInstalled(r.d);
+        }
+        removeAll->setEnabled(installed > 0);
+        installAll->setEnabled(missing > 0);
+        installAll->setText(busy ? QString("Installing %1…").arg(busy)
+                            : missing ? QString("Install all") : QString("All installed"));
     }
 
     // New styles arrived: rebuild the cards from what's installed now.
@@ -867,6 +962,16 @@ private:
         applyCursorLive(current);
     }
 
+    struct DownloadRow {
+        CursorDownload d;
+        QPushButton *button;
+        bool busy = false;
+    };
+
+    QStackedWidget *views;
+    QPushButton *installAll = nullptr, *removeAll = nullptr;
+    QList<DownloadRow> downloadRows;
+    bool needsRescan = false;
     QLabel *title, *hint, *fileLabel;
     QButtonGroup *sizeGroup, *cardGroup;
     QWidget *grid;
