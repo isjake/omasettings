@@ -5,4 +5,4 @@ omasettings
 aur/src/
 aur/pkg/
 aur/omasettings/
-aur/*.pkg.tar.zst
+aur/*.pkg.tar.*
